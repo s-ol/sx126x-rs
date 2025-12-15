@@ -27,7 +27,7 @@ pub struct Config {
     pub dio3_irq_mask: IrqMask,
     /// RF freq, calculated using crate::calc_rf_freq
     pub rf_freq: u32,
-    /// RF frequency in MHz
+    /// RF frequency in Hz
     pub rf_frequency: u32,
     /// TCXO options. Set to None if not using TCXO
     pub tcxo_opts: Option<(TcxoVoltage, TcxoDelay)>,
