@@ -18,7 +18,9 @@ impl RxTxTimeout {
     }
 
     pub const fn continuous_rx() -> Self {
-        Self { inner: [0xFF, 0xFF, 0xFF] }
+        Self {
+            inner: [0xFF, 0xFF, 0xFF],
+        }
     }
 }
 
