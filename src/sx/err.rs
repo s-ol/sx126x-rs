@@ -31,6 +31,8 @@ impl<TOPERR: Debug, TIPERR: Debug> Debug for PinError<TOPERR, TIPERR> {
 pub enum SxError<TSPIERR, TOPERR, TIPERR> {
     Spi(SpiError<TSPIERR>),
     Pin(PinError<TOPERR, TIPERR>),
+    Timeout,
+    BufferTooSmall,
 }
 
 impl<TSPIERR: Debug, TOPERR: Debug, TIPERR: Debug> Debug for SxError<TSPIERR, TOPERR, TIPERR> {
@@ -38,6 +40,8 @@ impl<TSPIERR: Debug, TOPERR: Debug, TIPERR: Debug> Debug for SxError<TSPIERR, TO
         match self {
             Self::Spi(err) => write!(f, "Spi({:?})", err),
             Self::Pin(err) => write!(f, "Pin({:?})", err),
+            Self::Timeout => write!(f, "Timeout"),
+            Self::BufferTooSmall => write!(f, "BufferTooSmall"),
         }
     }
 }

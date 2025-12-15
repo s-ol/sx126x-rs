@@ -132,7 +132,7 @@ where
 
     /// Busily wait for the dio1 pin to go high
     #[maybe_async_cfg::only_if(sync)]
-    fn wait_on_dio1(&mut self) -> Result<(), PinError<TOP::Error, TIP::Error>> {
+    pub fn wait_on_dio1(&mut self) -> Result<(), PinError<TOP::Error, TIP::Error>> {
         while let Ok(true) = self.dio1_pin.is_low() {
             // NOP
         }
@@ -159,7 +159,7 @@ where
 
     /// Busily wait for the dio1 pin to go high
     #[maybe_async_cfg::only_if(async)]
-    async fn wait_on_dio1(&mut self) -> Result<(), PinError<TOP::Error, TIP::Error>> {
+    pub async fn wait_on_dio1(&mut self) -> Result<(), PinError<TOP::Error, TIP::Error>> {
         self.dio1_pin
             .wait_for_high()
             .await
@@ -707,5 +707,59 @@ where
             .await
             .map_err(SpiError::Transfer)?;
         Ok(TryInto::<[u8; 2]>::try_into(&result[2..]).unwrap().into())
+    }
+
+    /// High level method to receive a message. This methods puts the device into RX mode
+    /// and waits until a packet is received a timeout occurs. The returned value is a slice
+    /// into `buffer`. Please note that this method updates the packet params.
+    pub async fn receive_bytes<'a>(
+        &mut self,
+        buffer: &'a mut [u8],
+        timeout: RxTxTimeout,
+        preamble_len: u16,
+        crc_type: packet::LoRaCrcType,
+    ) -> Result<&'a [u8], SxError<TSPI::Error, TOP::Error, TIP::Error>> {
+        use packet::LoRaPacketParams;
+
+        // Set packet params
+        let params = LoRaPacketParams::default()
+            .set_preamble_len(preamble_len)
+            .set_payload_len(buffer.len() as u8)
+            .set_crc_type(crc_type)
+            .into();
+
+        self.set_packet_params(params).await?;
+
+        // Set rx mode
+        self.set_rx(timeout).await?;
+        self.wait_on_busy().await?;
+
+        let mask = IrqMask::none()
+            .combine(IrqMaskBit::RxDone)
+            .combine(IrqMaskBit::Timeout);
+
+        loop {
+            self.wait_on_dio1().await?;
+
+            let irq = self.get_irq_status().await?;
+            if irq.timeout() {
+                self.clear_irq_status(mask).await?;
+                return Err(SxError::Timeout);
+            } else if irq.rx_done() {
+                self.clear_irq_status(mask).await?;
+                break;
+            }
+        }
+
+        let info = self.get_rx_buffer_status().await?;
+        let len = info.payload_length_rx() as usize;
+        if len > buffer.len() {
+            Err(SxError::BufferTooSmall)
+        } else {
+            self.read_buffer(info.rx_start_buffer_pointer(), &mut buffer[..len])
+                .await?;
+
+            Ok(&buffer[..len])
+        }
     }
 }
