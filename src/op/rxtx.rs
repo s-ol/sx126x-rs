@@ -113,17 +113,15 @@ impl From<PaConfig> for [u8; 4] {
     }
 }
 
-impl Default for PaConfig {
-    fn default() -> Self {
+impl PaConfig {
+    pub fn new(device_sel: DeviceSel) -> Self {
         Self {
             pa_duty_cycle: 0x00,
             hp_max: 0x00,
-            device_sel: DeviceSel::SX1262,
+            device_sel,
         }
     }
-}
 
-impl PaConfig {
     pub fn set_pa_duty_cycle(mut self, pa_duty_cycle: u8) -> Self {
         self.pa_duty_cycle = pa_duty_cycle;
         self
