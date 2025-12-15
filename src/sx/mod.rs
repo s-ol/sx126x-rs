@@ -18,8 +18,6 @@ use crate::reg::*;
 
 use self::err::{PinError, SxError};
 
-type Pins<TNRST, TBUSY, TANT, TDIO1> = (TNRST, TBUSY, TANT, TDIO1);
-
 const NOP: u8 = 0x00;
 
 /// Calculates the rf_freq value that should be passed to SX126x::set_rf_frequency
@@ -35,12 +33,12 @@ pub fn calc_rf_freq(rf_frequency: f32, f_xtal: f32) -> u32 {
 
 /// Wrapper around a Semtech SX1261/62 LoRa modem
 #[maybe_async_cfg::maybe(sync(feature = "sync", keep_self), async(feature = "async"))]
-pub struct SX126x<TSPI, TNRST, TBUSY, TANT, TDIO1> {
+pub struct SX126x<TSPI, TOP, TIP, TANT> {
     spi: TSPI,
-    nrst_pin: TNRST,
-    busy_pin: TBUSY,
+    nrst_pin: TOP,
+    busy_pin: TIP,
+    dio1_pin: TIP,
     ant_pin: TANT,
-    dio1_pin: TDIO1,
 }
 
 #[maybe_async_cfg::maybe(
@@ -51,30 +49,77 @@ pub struct SX126x<TSPI, TNRST, TBUSY, TANT, TDIO1> {
         InputPin(sync, async = "Wait")
     )
 )]
-impl<TSPI, TNRST, TBUSY, TANT, TDIO1, TSPIERR, TPINERR> SX126x<TSPI, TNRST, TBUSY, TANT, TDIO1>
+impl<TSPI, TOP, TIP> SX126x<TSPI, TOP, TIP, ()>
 where
-    TPINERR: core::fmt::Debug,
-    TSPI: SpiDevice<Error = TSPIERR>,
-    TNRST: OutputPin<Error = TPINERR>,
-    TANT: OutputPin<Error = TPINERR>,
-    TBUSY: InputPin<Error = TPINERR>,
-    TDIO1: InputPin<Error = TPINERR>,
+    TSPI: SpiDevice,
+    TOP: OutputPin,
+    TIP: InputPin,
 {
-    // Create a new SX126x
-    pub fn new(spi: TSPI, pins: Pins<TNRST, TBUSY, TANT, TDIO1>) -> Self {
-        let (nrst_pin, busy_pin, ant_pin, dio1_pin) = pins;
+    /// Create a new device without antenna control
+    pub fn new(spi: TSPI, nrst_pin: TOP, busy_pin: TIP, dio1_pin: TIP) -> Self {
         Self {
             spi,
             nrst_pin,
             busy_pin,
-            ant_pin,
             dio1_pin,
+            ant_pin: (),
+        }
+    }
+}
+
+#[maybe_async_cfg::maybe(
+    sync(feature = "sync", keep_self),
+    async(feature = "async"),
+    idents(
+        SpiDevice(sync, async = "SpiDeviceAsync"),
+        InputPin(sync, async = "Wait")
+    )
+)]
+impl<TSPI, TOP, TIP> SX126x<TSPI, TOP, TIP, TOP>
+where
+    TSPI: SpiDevice,
+    TOP: OutputPin,
+    TIP: InputPin,
+{
+    /// Create a new device with dedicated antenna control pin
+    pub fn new_with_ant(spi: TSPI, nrst_pin: TOP, busy_pin: TIP, dio1_pin: TIP, ant_pin: TOP) -> Self {
+        Self {
+            spi,
+            nrst_pin,
+            busy_pin,
+            dio1_pin,
+            ant_pin,
         }
     }
 
+    /// Enable antenna
+    pub async fn set_ant_enabled(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), PinError<TOP::Error, TIP::Error>> {
+        self.ant_pin
+            .set_state(enabled.into())
+            .map_err(PinError::Output)
+    }
+}
+
+#[maybe_async_cfg::maybe(
+    sync(feature = "sync", keep_self),
+    async(feature = "async"),
+    idents(
+        SpiDevice(sync, async = "SpiDeviceAsync"),
+        InputPin(sync, async = "Wait")
+    )
+)]
+impl<TSPI, TOP, TIP, TANT> SX126x<TSPI, TOP, TIP, TANT>
+where
+    TSPI: SpiDevice,
+    TOP: OutputPin,
+    TIP: InputPin,
+{
     /// Busily wait for the busy pin to go low
     #[maybe_async_cfg::only_if(sync)]
-    pub fn wait_on_busy(&mut self) -> Result<(), SpiError<TSPIERR>> {
+    pub fn wait_on_busy(&mut self) -> Result<(), SpiError<TSPI::Error>> {
         self.spi
             .transaction(&mut [Operation::DelayNs(1000)])
             .map_err(SpiError::Transfer)?;
@@ -87,7 +132,7 @@ where
 
     /// Busily wait for the dio1 pin to go high
     #[maybe_async_cfg::only_if(sync)]
-    fn wait_on_dio1(&mut self) -> Result<(), PinError<TPINERR>> {
+    fn wait_on_dio1(&mut self) -> Result<(), PinError<TOP::Error, TIP::Error>> {
         while let Ok(true) = self.dio1_pin.is_low() {
             // NOP
         }
@@ -96,7 +141,9 @@ where
 
     /// Busily wait for the busy pin to go low
     #[maybe_async_cfg::only_if(async)]
-    pub async fn wait_on_busy(&mut self) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    pub async fn wait_on_busy(
+        &mut self,
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi
             .transaction(&mut [Operation::DelayNs(1000)])
             .await
@@ -112,7 +159,7 @@ where
 
     /// Busily wait for the dio1 pin to go high
     #[maybe_async_cfg::only_if(async)]
-    async fn wait_on_dio1(&mut self) -> Result<(), PinError<TPINERR>> {
+    async fn wait_on_dio1(&mut self) -> Result<(), PinError<TOP::Error, TIP::Error>> {
         self.dio1_pin
             .wait_for_high()
             .await
@@ -121,7 +168,10 @@ where
     }
 
     // Initialize and configure the SX126x using the provided Config
-    pub async fn init(&mut self, conf: Config) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    pub async fn init(
+        &mut self,
+        conf: Config,
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         // Reset the sx
         self.reset().await?;
         self.wait_on_busy().await?;
@@ -199,7 +249,10 @@ where
     /// Set the LoRa Sync word
     /// Use 0x3444 for public networks like TTN
     /// Use 0x1424 for private networks
-    pub async fn set_sync_word(&mut self, sync_word: u16) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    pub async fn set_sync_word(
+        &mut self,
+        sync_word: u16,
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.write_register(Register::LoRaSyncWordMsb, &sync_word.to_be_bytes())
             .await
     }
@@ -209,7 +262,7 @@ where
     pub async fn set_packet_type(
         &mut self,
         packet_type: PacketType,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi
             .write(&[0x8A, packet_type as u8])
             .await
@@ -221,7 +274,7 @@ where
     pub async fn set_standby(
         &mut self,
         standby_config: StandbyConfig,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi
             .write(&[0x80, standby_config as u8])
             .await
@@ -230,7 +283,9 @@ where
     }
 
     /// Get the current status of the modem
-    pub async fn get_status(&mut self) -> Result<Status, SxError<TSPIERR, TPINERR>> {
+    pub async fn get_status(
+        &mut self,
+    ) -> Result<Status, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mut result = [0xC0, NOP];
         self.spi
             .transfer_in_place(&mut result)
@@ -240,12 +295,14 @@ where
         Ok(result[1].into())
     }
 
-    pub async fn set_fs(&mut self) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    pub async fn set_fs(&mut self) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi.write(&[0xC1]).await.map_err(SpiError::Write)?;
         Ok(())
     }
 
-    pub async fn get_stats(&mut self) -> Result<Stats, SxError<TSPIERR, TPINERR>> {
+    pub async fn get_stats(
+        &mut self,
+    ) -> Result<Stats, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mut result = [0x10, NOP, NOP, NOP, NOP, NOP, NOP, NOP];
         self.spi
             .transfer_in_place(&mut result)
@@ -259,7 +316,7 @@ where
     pub async fn calibrate_image(
         &mut self,
         freq: CalibImageFreq,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let freq: [u8; 2] = freq.into();
         let mut ops = [Operation::Write(&[0x98]), Operation::Write(&freq)];
         self.spi
@@ -273,7 +330,7 @@ where
     pub async fn calibrate(
         &mut self,
         calib_param: CalibParam,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi
             .write(&[0x89, calib_param.into()])
             .await
@@ -286,7 +343,7 @@ where
         &mut self,
         register: Register,
         data: &[u8],
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let start_addr = (register as u16).to_be_bytes();
         let mut ops = [
             Operation::Write(&[0x0D]),
@@ -306,7 +363,7 @@ where
         &mut self,
         start_addr: u16,
         result: &mut [u8],
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         debug_assert!(!result.is_empty());
         let start_addr = start_addr.to_be_bytes();
 
@@ -328,7 +385,7 @@ where
         &mut self,
         offset: u8,
         data: &[u8],
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let header = [0x0E, offset];
         let mut ops = [Operation::Write(&header), Operation::Write(data)];
         self.spi
@@ -343,7 +400,7 @@ where
         &mut self,
         offset: u8,
         result: &mut [u8],
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let header = [0x1E, offset, NOP];
         let mut ops = [Operation::Write(&header), Operation::Read(result)];
         self.spi
@@ -357,7 +414,7 @@ where
     pub async fn set_dio2_as_rf_switch_ctrl(
         &mut self,
         enable: bool,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi
             .write(&[0x9D, enable as u8])
             .await
@@ -365,7 +422,9 @@ where
             .map_err(Into::into)
     }
 
-    pub async fn get_packet_status(&mut self) -> Result<PacketStatus, SxError<TSPIERR, TPINERR>> {
+    pub async fn get_packet_status(
+        &mut self,
+    ) -> Result<PacketStatus, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let header = [0x14, NOP];
         let mut result = [NOP; 3];
         let mut ops = [Operation::Write(&header), Operation::Read(&mut result)];
@@ -382,7 +441,7 @@ where
         &mut self,
         tcxo_voltage: TcxoVoltage,
         tcxo_delay: TcxoDelay,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let header = [0x97, tcxo_voltage as u8];
         let tcxo_delay: [u8; 3] = tcxo_delay.into();
         let mut ops = [Operation::Write(&header), Operation::Write(&tcxo_delay)];
@@ -394,7 +453,9 @@ where
     }
 
     /// Clear device error register
-    pub async fn clear_device_errors(&mut self) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    pub async fn clear_device_errors(
+        &mut self,
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi
             .write(&[0x07, NOP, NOP])
             .await
@@ -403,7 +464,9 @@ where
     }
 
     /// Get current device errors
-    pub async fn get_device_errors(&mut self) -> Result<DeviceErrors, SxError<TSPIERR, TPINERR>> {
+    pub async fn get_device_errors(
+        &mut self,
+    ) -> Result<DeviceErrors, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mut result = [0x17, NOP, NOP, NOP];
         self.spi
             .transfer_in_place(&mut result)
@@ -415,26 +478,15 @@ where
     }
 
     /// Reset the device py pulling nrst low for a while
-    pub async fn reset(&mut self) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    pub async fn reset(&mut self) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.nrst_pin.set_low().map_err(PinError::Output)?;
         // 8.1: The pin should be held low for typically 100 μs for the Reset to happen
         self.spi
             .transaction(&mut [Operation::DelayNs(200_000)])
             .await
             .map_err(SpiError::Write)?;
-        self.nrst_pin
-            .set_high()
-            .map_err(PinError::Output)
-            .map_err(Into::into)
-    }
-
-    /// Enable antenna
-    pub async fn set_ant_enabled(&mut self, enabled: bool) -> Result<(), TPINERR> {
-        if enabled {
-            self.ant_pin.set_high()
-        } else {
-            self.ant_pin.set_low()
-        }
+        self.nrst_pin.set_high().map_err(PinError::Output)?;
+        Ok(())
     }
 
     /// Configure IRQ
@@ -445,7 +497,7 @@ where
         dio1_mask: IrqMask,
         dio2_mask: IrqMask,
         dio3_mask: IrqMask,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let irq = (Into::<u16>::into(irq_mask)).to_be_bytes();
         let dio1 = (Into::<u16>::into(dio1_mask)).to_be_bytes();
         let dio2 = (Into::<u16>::into(dio2_mask)).to_be_bytes();
@@ -465,7 +517,9 @@ where
     }
 
     /// Get the current IRQ status
-    pub async fn get_irq_status(&mut self) -> Result<IrqStatus, SxError<TSPIERR, TPINERR>> {
+    pub async fn get_irq_status(
+        &mut self,
+    ) -> Result<IrqStatus, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mut status = [NOP, NOP, NOP];
         let mut ops = [Operation::Write(&[0x12]), Operation::Read(&mut status)];
         self.spi
@@ -480,7 +534,7 @@ where
     pub async fn clear_irq_status(
         &mut self,
         mask: IrqMask,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mask = Into::<u16>::into(mask).to_be_bytes();
         let mut ops = [Operation::Write(&[0x02]), Operation::Write(&mask)];
         self.spi
@@ -495,7 +549,7 @@ where
     pub async fn set_tx(
         &mut self,
         timeout: RxTxTimeout,
-    ) -> Result<Status, SxError<TSPIERR, TPINERR>> {
+    ) -> Result<Status, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mut buf = [0x83u8; 4];
         let timeout: [u8; 3] = timeout.into();
         buf[1..].copy_from_slice(&timeout);
@@ -510,7 +564,7 @@ where
     pub async fn set_rx(
         &mut self,
         timeout: RxTxTimeout,
-    ) -> Result<Status, SxError<TSPIERR, TPINERR>> {
+    ) -> Result<Status, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mut buf = [0x82u8; 4];
         let timeout: [u8; 3] = timeout.into();
         buf[1..].copy_from_slice(&timeout);
@@ -524,7 +578,7 @@ where
         &mut self,
 
         params: PacketParams,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let params: [u8; 9] = params.into();
         let mut ops = [Operation::Write(&[0x8C]), Operation::Write(&params)];
         self.spi
@@ -538,7 +592,7 @@ where
     pub async fn set_mod_params(
         &mut self,
         params: ModParams,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let params: [u8; 8] = params.into();
         let mut ops = [Operation::Write(&[0x8B]), Operation::Write(&params)];
         self.spi
@@ -552,7 +606,7 @@ where
     pub async fn set_tx_params(
         &mut self,
         params: TxParams,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let params: [u8; 2] = params.into();
         let mut ops = [Operation::Write(&[0x8E]), Operation::Write(&params)];
         self.spi
@@ -568,7 +622,7 @@ where
     pub async fn set_rf_frequency(
         &mut self,
         rf_freq: u32,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let rf_freq = rf_freq.to_be_bytes();
         let mut ops = [Operation::Write(&[0x86]), Operation::Write(&rf_freq)];
         self.spi
@@ -582,7 +636,7 @@ where
     pub async fn set_pa_config(
         &mut self,
         pa_config: PaConfig,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let pa_config: [u8; 4] = pa_config.into();
         let mut ops = [Operation::Write(&[0x95]), Operation::Write(&pa_config)];
         self.spi
@@ -598,7 +652,7 @@ where
 
         tx_base_addr: u8,
         rx_base_addr: u8,
-    ) -> Result<(), SxError<TSPIERR, TPINERR>> {
+    ) -> Result<(), SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         self.spi
             .write(&[0x8F, tx_base_addr, rx_base_addr])
             .await
@@ -616,7 +670,7 @@ where
         timeout: RxTxTimeout,
         preamble_len: u16,
         crc_type: packet::LoRaCrcType,
-    ) -> Result<Status, SxError<TSPIERR, TPINERR>> {
+    ) -> Result<Status, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         use packet::LoRaPacketParams;
         // Write data to buffer
         self.write_buffer(0x00, data).await?;
@@ -646,7 +700,7 @@ where
     /// and the address of the first byte received.
     pub async fn get_rx_buffer_status(
         &mut self,
-    ) -> Result<RxBufferStatus, SxError<TSPIERR, TPINERR>> {
+    ) -> Result<RxBufferStatus, SxError<TSPI::Error, TOP::Error, TIP::Error>> {
         let mut result = [0x13, NOP, NOP, NOP];
         self.spi
             .transfer_in_place(&mut result)

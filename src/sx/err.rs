@@ -14,12 +14,12 @@ impl<TSPIERR: Debug> Debug for SpiError<TSPIERR> {
     }
 }
 
-pub enum PinError<TPINERR> {
-    Output(TPINERR),
-    Input(TPINERR),
+pub enum PinError<TOPERR, TIPERR> {
+    Output(TOPERR),
+    Input(TIPERR),
 }
 
-impl<TPINERR: Debug> Debug for PinError<TPINERR> {
+impl<TOPERR: Debug, TIPERR: Debug> Debug for PinError<TOPERR, TIPERR> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Output(err) => write!(f, "Output({:?})", err),
@@ -28,12 +28,12 @@ impl<TPINERR: Debug> Debug for PinError<TPINERR> {
     }
 }
 
-pub enum SxError<TSPIERR, TPINERR> {
+pub enum SxError<TSPIERR, TOPERR, TIPERR> {
     Spi(SpiError<TSPIERR>),
-    Pin(PinError<TPINERR>),
+    Pin(PinError<TOPERR, TIPERR>),
 }
 
-impl<TSPIERR: Debug, TPINERR: Debug> Debug for SxError<TSPIERR, TPINERR> {
+impl<TSPIERR: Debug, TOPERR: Debug, TIPERR: Debug> Debug for SxError<TSPIERR, TOPERR, TIPERR> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Spi(err) => write!(f, "Spi({:?})", err),
@@ -42,14 +42,14 @@ impl<TSPIERR: Debug, TPINERR: Debug> Debug for SxError<TSPIERR, TPINERR> {
     }
 }
 
-impl<TSPIERR, TPINERR> From<SpiError<TSPIERR>> for SxError<TSPIERR, TPINERR> {
+impl<TSPIERR, TOPERR, TIPERR> From<SpiError<TSPIERR>> for SxError<TSPIERR, TOPERR, TIPERR> {
     fn from(spi_err: SpiError<TSPIERR>) -> Self {
         SxError::Spi(spi_err)
     }
 }
 
-impl<TSPIERR, TPINERR> From<PinError<TPINERR>> for SxError<TSPIERR, TPINERR> {
-    fn from(spi_err: PinError<TPINERR>) -> Self {
+impl<TSPIERR, TOPERR, TIPERR> From<PinError<TOPERR, TIPERR>> for SxError<TSPIERR, TOPERR, TIPERR> {
+    fn from(spi_err: PinError<TOPERR, TIPERR>) -> Self {
         SxError::Pin(spi_err)
     }
 }
