@@ -9,14 +9,12 @@ use embedded_hal::{
 #[cfg(feature = "async")]
 use embedded_hal_async::{digital::Wait, spi::SpiDevice as SpiDeviceAsync};
 
-use err::SpiError;
-
 use crate::conf::Config;
 use crate::op::*;
 use crate::reg::*;
 // use err::OutputPinError;
 
-use self::err::{PinError, SxError};
+pub use self::err::{PinError, SpiError, SxError};
 
 const NOP: u8 = 0x00;
 
@@ -82,7 +80,13 @@ where
     TIP: InputPin,
 {
     /// Create a new device with dedicated antenna control pin
-    pub fn new_with_ant(spi: TSPI, nrst_pin: TOP, busy_pin: TIP, dio1_pin: TIP, ant_pin: TOP) -> Self {
+    pub fn new_with_ant(
+        spi: TSPI,
+        nrst_pin: TOP,
+        busy_pin: TIP,
+        dio1_pin: TIP,
+        ant_pin: TOP,
+    ) -> Self {
         Self {
             spi,
             nrst_pin,
